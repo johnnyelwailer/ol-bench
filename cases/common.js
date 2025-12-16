@@ -37,6 +37,168 @@ const link = new Link({
 /** @type {Map} */
 let map;
 
+/** @type {HTMLDivElement|null} */
+let fpsElement = null;
+
+/** @type {import('ol/events.js').EventsKey|null} */
+let fpsListenerKey = null;
+
+/** @type {number|null} */
+let fpsRafHandle = null;
+
+/** @type {number|null} */
+let fpsMapValue = null;
+
+/** @type {number|null} */
+let fpsMapEma = null;
+
+/** @type {number|null} */
+let fpsRafValue = null;
+
+function attachFpsElementToAnalyzer() {
+  if (!fpsElement) {
+    return;
+  }
+
+  const analyzerContainer = document.querySelector(
+    '.rendering-analyzer-container',
+  );
+  if (!analyzerContainer) {
+    return;
+  }
+
+  // Try to insert into the performance stats panel (table), not next to it.
+  const titleEl = Array.from(analyzerContainer.querySelectorAll('div')).find(
+    (el) => el.textContent?.trim() === 'PERFORMANCE STATS',
+  );
+  const tableRoot = titleEl?.parentElement || null;
+
+  if (tableRoot) {
+    fpsElement.style.cssText = `
+		padding: 8px;
+		background: rgba(255, 255, 255, 0.8);
+		font-family: monospace;
+		font-size: 12px;
+		white-space: pre;
+		width: 400px;
+		order: 9;
+		pointer-events: none;
+		border: solid darkred 1px;
+		`;
+    if (fpsElement.parentElement !== analyzerContainer) {
+      analyzerContainer.appendChild(fpsElement);
+    }
+    return;
+  }
+
+  // Fallback: keep it inside the analyzer container.
+  if (fpsElement.parentElement !== analyzerContainer) {
+    fpsElement.style.cssText = `
+			padding: 8px;
+			background: rgba(255, 255, 255, 0.8);
+			font-family: monospace;
+			font-size: 12px;
+			width: 400px;
+			order: 7;
+			pointer-events: none;
+			border: solid darkred 1px;
+			`;
+    analyzerContainer.appendChild(fpsElement);
+  }
+}
+
+function ensureFpsElement() {
+  if (fpsElement) {
+    return fpsElement;
+  }
+  const el = document.createElement('div');
+  el.id = 'fps-meter';
+  el.style.cssText = `
+		position: fixed;
+		top: 10px;
+		left: 10px;
+		z-index: 3;
+		padding: 6px 10px;
+		border-radius: 6px;
+		background: rgba(0, 0, 0, 0.65);
+		color: white;
+		font: 12px/1.2 monospace;
+		pointer-events: none;
+		`;
+  document.body.appendChild(el);
+
+  fpsElement = el;
+  renderFpsText();
+  attachFpsElementToAnalyzer();
+  return el;
+}
+
+function renderFpsText() {
+  if (!fpsElement) {
+    return;
+  }
+  const parts = [];
+  if (fpsMapValue !== null) {
+    const ema = fpsMapEma !== null ? ` (ema: ${fpsMapEma.toFixed(1)})` : '';
+    parts.push(`fps(map): ${fpsMapValue.toFixed(1)}${ema}`);
+  }
+  if (fpsRafValue !== null) {
+    parts.push(`fps(raf): ${fpsRafValue.toFixed(1)}`);
+  }
+  fpsElement.textContent = parts.length ? parts.join(' | ') : 'fps: …';
+  attachFpsElementToAnalyzer();
+}
+
+function enableFpsMeter() {
+  ensureFpsElement();
+
+  if (!fpsListenerKey) {
+    let last = performance.now();
+    let frames = 0;
+    let smoothed = 0;
+    let lastUpdate = last;
+
+    fpsListenerKey = map.on('postrender', () => {
+      const now = performance.now();
+      frames++;
+      const dt = now - last;
+      last = now;
+
+      if (dt > 0) {
+        const instant = 1000 / dt;
+        smoothed = smoothed ? smoothed * 0.9 + instant * 0.1 : instant;
+      }
+
+      if (now - lastUpdate > 500) {
+        fpsMapValue = (frames * 1000) / (now - lastUpdate);
+        fpsMapEma = smoothed;
+        frames = 0;
+        lastUpdate = now;
+        renderFpsText();
+      }
+    });
+  }
+
+  if (fpsRafHandle === null) {
+    let frames = 0;
+    let lastUpdate = performance.now();
+
+    const tick = () => {
+      const now = performance.now();
+      frames++;
+      if (now - lastUpdate > 500) {
+        fpsRafValue = (frames * 1000) / (now - lastUpdate);
+        frames = 0;
+        lastUpdate = now;
+        renderFpsText();
+      }
+
+      fpsRafHandle = requestAnimationFrame(tick);
+    };
+    fpsRafHandle = requestAnimationFrame(tick);
+  }
+}
+
 /** @type {function(Map): void} */
 let useWebGLCallback;
 
@@ -545,6 +707,7 @@ async function enablePerformanceTracking(mode) {
   }
   showTable();
   showGraph();
+  enableFpsMeter();
   /** @type {HTMLDivElement} */ (gui.domElement).style.right = '430px';
 }
 

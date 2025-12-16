@@ -204,6 +204,7 @@ function resetData(count, featureSize, map) {
   const spacingX = width / (columns + 1);
   const spacingY = height / (rows + 1);
   const cell = Math.min(spacingX, spacingY);
+  const tau = Math.PI * 2;
 
   const newFeatures = [];
   for (let i = 0; i < count; i++) {
@@ -220,16 +221,19 @@ function resetData(count, featureSize, map) {
         [x + dx, y],
       ]);
     } else if (geometryType === 'polygon') {
-      const half = cell * 0.25;
-      geometry = new Polygon([
-        [
-          [x - half, y - half],
-          [x + half, y - half],
-          [x + half, y + half],
-          [x - half, y + half],
-          [x - half, y - half],
-        ],
-      ]);
+      const vertexCount = 5 + (i % 6); // 5..10 vertices, per-feature variance
+      const angleStep = tau / vertexCount;
+      const baseRadius = cell * 0.28;
+      const minRadius = baseRadius * 0.55;
+      const maxRadius = baseRadius * 1.0;
+      const ring = [];
+      for (let v = 0; v < vertexCount; v++) {
+        const angle = v * angleStep + (Math.random() - 0.5) * angleStep * 0.35;
+        const radius = minRadius + Math.random() * (maxRadius - minRadius);
+        ring.push([x + Math.cos(angle) * radius, y + Math.sin(angle) * radius]);
+      }
+      ring.push(ring[0]);
+      geometry = new Polygon([ring]);
     } else {
       geometry = new Point([x, y]);
     }
