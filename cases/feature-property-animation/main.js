@@ -25,7 +25,7 @@ const source = new VectorSource({
  */
 
 /** @type {GeometryType} */
-let geometryType = 'point';
+let geometryType = 'polygon';
 
 let animateAngle = true;
 let animateSize = false;
