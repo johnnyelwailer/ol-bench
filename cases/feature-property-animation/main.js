@@ -11,6 +11,7 @@ import {
   getRandomPaletteColor,
   initializeGui,
   regenerateLayer,
+  registerGuiLogNumberParameter,
   registerGuiParameter,
   registerGuiSelectParameter,
 } from '../common.js';
@@ -263,7 +264,7 @@ function resetData(count, featureSize, map) {
 
 function main() {
   geometryType =
-    /** @type {GeometryType} */ (getGuiParameterValue('geometry')) || 'point';
+    /** @type {GeometryType} */ (getGuiParameterValue('geometry')) || 'polygon';
   style = buildStyle();
 
   const map = createMap(
@@ -288,13 +289,13 @@ function main() {
     },
   );
 
-  initializeGui();
+  initializeGui({includeAnimate: false});
 
   registerGuiSelectParameter(
     'geometry',
     'Geometry',
     {Points: 'point', Lines: 'line', Polygons: 'polygon'},
-    'point',
+    'polygon',
     async (value, initial) => {
       geometryType = /** @type {GeometryType} */ (value);
       style = buildStyle();
@@ -306,6 +307,16 @@ function main() {
         );
         await regenerateLayer();
       }
+    },
+  );
+  registerGuiParameter(
+    'animateColor',
+    'Animate color',
+    ['yes', 'no'],
+    true,
+    (value) => {
+      animateColor = /** @type {boolean} */ (value);
+      applyStaticProperties();
     },
   );
 
@@ -330,16 +341,6 @@ function main() {
     },
   );
   registerGuiParameter(
-    'animateColor',
-    'Animate color',
-    ['yes', 'no'],
-    false,
-    (value) => {
-      animateColor = /** @type {boolean} */ (value);
-      applyStaticProperties();
-    },
-  );
-  registerGuiParameter(
     'animateOpacity',
     'Animate opacity',
     ['yes', 'no'],
@@ -350,10 +351,11 @@ function main() {
     },
   );
 
-  registerGuiParameter(
+  registerGuiLogNumberParameter(
     'count',
     'Feature count',
-    [1, 20000, 1],
+    1,
+    20000,
     10,
     (value, initial) => {
       if (initial) {

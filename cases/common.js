@@ -577,6 +577,110 @@ export function registerGuiParameter(
 }
 
 /**
+ * Registers a GUI parameter with a logarithmic slider (for large ranges).
+ * Creates a numeric input for exact values (stored in URL under `id`) and a
+ * log-scale slider for easier selection of low values.
+ * @param {string} id Id (stored in URL, actual numeric value)
+ * @param {string} label Label
+ * @param {number} min Minimum (inclusive)
+ * @param {number} max Maximum (inclusive)
+ * @param {number} defaultValue Default value
+ * @param {function(number, boolean|null): void|Promise<void>} callback Callback
+ */
+export function registerGuiLogNumberParameter(
+  id,
+  label,
+  min,
+  max,
+  defaultValue,
+  callback,
+) {
+  if (min <= 0 || max <= 0) {
+    throw new Error('registerGuiLogNumberParameter requires min/max > 0');
+  }
+  /**
+   * @param {number} value Value
+   * @return {number} Clamped value
+   */
+  function clamp(value) {
+    return Math.min(max, Math.max(min, value));
+  }
+  const logMin = Math.log(min);
+  const logMax = Math.log(max);
+  /**
+   * @param {number} value Value
+   * @return {number} Log value
+   */
+  function toLog(value) {
+    return Math.log(clamp(value));
+  }
+  /**
+   * @param {number} value Value
+   * @return {number} Mapped numeric value
+   */
+  function fromLog(value) {
+    return clamp(Math.round(Math.exp(value)));
+  }
+
+  let initialValue = defaultValue;
+  const fromUrl = new URL(window.location.href).searchParams.get(id);
+  if (fromUrl !== null) {
+    const numeric = Number.parseFloat(fromUrl);
+    if (!Number.isNaN(numeric)) {
+      initialValue = numeric;
+    }
+  }
+  initialValue = clamp(initialValue);
+
+  // Store the actual value under `id` (for getGuiParameterValue), but only
+  // expose a single log-scale slider control in the GUI.
+  guiParams[id] = initialValue;
+  const logId = `${id}__log`;
+  guiParams[logId] = toLog(initialValue);
+
+  const controller = gui
+    .add(guiParams, logId, logMin, logMax, 0.01)
+    .name(label);
+  // lil-gui's NumberController has `$input` and `_inputFocused`, but the public
+  // Controller type doesn't expose them.
+  const numberController = /** @type {any} */ (controller);
+  numberController.$input.readOnly = true;
+
+  const originalUpdateDisplay = numberController.updateDisplay.bind(controller);
+  controller.updateDisplay = () => {
+    originalUpdateDisplay();
+    if (!numberController._inputFocused) {
+      numberController.$input.value = String(guiParams[id]);
+    }
+    return controller;
+  };
+  controller.updateDisplay();
+
+  void callback(initialValue, true);
+
+  link.track(id, (value) => {
+    const numeric = Number.parseFloat(value);
+    if (Number.isNaN(numeric)) {
+      return;
+    }
+    const clamped = clamp(numeric);
+    guiParams[id] = clamped;
+    guiParams[logId] = toLog(clamped);
+    controller.updateDisplay();
+    void callback(clamped, false);
+  });
+
+  controller.onFinishChange((/** @type {number} */ rawValue) => {
+    const value = fromLog(rawValue);
+    guiParams[id] = value;
+    guiParams[logId] = toLog(value);
+    controller.updateDisplay();
+    link.update(id, value.toString());
+    void callback(value, false);
+  });
+}
+
+/**
  * @param {string} id Parameter id
  * @return {number|boolean|string|null|function(): void} Current value (null if unknown/uninitialized)
  */
@@ -717,7 +821,62 @@ export const olVersion =
   // eslint-disable-next-line no-undef
   __DEFAULT_OL_VERSION; // defined at build time by Vite
 
-export function initializeGui() {
+function animate() {
+  const view = map.getView();
+
+  const initialRotation = 0;
+  const initialZoom = 4;
+  const initialCenter = [0, 0];
+
+  view.setRotation(initialRotation);
+  view.setZoom(initialZoom);
+  view.setCenter(initialCenter);
+
+  setTimeout(() => {
+    view.animate(
+      {
+        rotation: initialRotation + Math.PI / 2,
+        duration: 2000,
+      },
+      {
+        rotation: initialRotation - Math.PI / 2,
+        duration: 2000,
+      },
+      {
+        zoom: 5,
+        duration: 2000,
+      },
+      {
+        zoom: 10,
+        duration: 2000,
+      },
+      {
+        zoom: initialZoom,
+        duration: 2000,
+      },
+      {
+        center: [initialCenter[0] + 40, initialCenter[1]],
+        duration: 2000,
+      },
+      {
+        center: initialCenter,
+        duration: 2000,
+      },
+      {
+        rotation: initialRotation + Math.PI / 2,
+      },
+      {
+        rotation: initialRotation - Math.PI / 2,
+      },
+    );
+  }, 1000);
+}
+
+/**
+ * @param {{includeAnimate?: boolean}} [options] Options
+ */
+export function initializeGui(options) {
+  const includeAnimate = options?.includeAnimate ?? true;
   gui
     .add({olVersion}, 'olVersion')
     .name('OpenLayers Version')
@@ -729,6 +888,10 @@ export function initializeGui() {
       newUrl.searchParams.set('olVersion', rawValue);
       window.location.href = newUrl.href;
     });
+
+  if (includeAnimate) {
+    registerGuiParameter('animate', 'Start Animation', [], animate, () => {});
+  }
 
   registerGuiSelectParameter(
     'renderer',
