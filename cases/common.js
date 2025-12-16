@@ -43,12 +43,29 @@ let useWebGLCallback;
 /** @type {function(Map): void} */
 let useCanvasCallback;
 
+/** @type {(function(Map): (void|Promise<void>))|null} */
+let useWebGPUCallback;
+
+const WEBGPU_VECTOR_STYLE_RENDERER_MODULE = [
+  'ol',
+  'render',
+  'webgpu',
+  'VectorStyleRenderer.js',
+].join('/');
+const WEBGPU_VECTOR_LAYER_RENDERER_MODULE = [
+  'ol',
+  'renderer',
+  'webgpu',
+  'VectorLayer.js',
+].join('/');
+
 /**
  * @param {function(Map): void} useWebGL Called when WebGL is enabled
  * @param {function(Map): void} useCanvas Called when WebGL is disabled
+ * @param {function(Map): (void|Promise<void>)} [useWebGPU] Called when WebGPU is enabled
  * @return {Map} Map
  */
-export function createMap(useWebGL, useCanvas) {
+export function createMap(useWebGL, useCanvas, useWebGPU) {
   map = new Map({
     layers: [],
     target: 'map',
@@ -62,6 +79,7 @@ export function createMap(useWebGL, useCanvas) {
   );
   useWebGLCallback = useWebGL;
   useCanvasCallback = useCanvas;
+  useWebGPUCallback = useWebGPU ?? null;
   map.addInteraction(link);
   return map;
 }
@@ -369,27 +387,51 @@ export function getGuiParameterValue(id) {
   return guiParams[id];
 }
 
-export function regenerateLayer() {
+export async function regenerateLayer() {
   map.getLayers().clear();
-  if (getGuiParameterValue('renderer') === true) {
-    useWebGLCallback(map);
-  } else {
-    useCanvasCallback(map);
+  if (getGuiParameterValue('renderer') !== true) {
+    await useCanvasCallback(map);
+    return;
   }
+
+  if (getGuiParameterValue('webgpu') === true && useWebGPUCallback) {
+    try {
+      await useWebGPUCallback(map);
+      return;
+    } catch (error) {
+      console.warn('WebGPU failed to initialize, falling back to WebGL', error);
+    }
+  }
+
+  await useWebGLCallback(map);
 }
 
 /**
- * @param {boolean} useWebGL Track WebGL classes
+ * @param {'canvas'|'webgl'|'webgpu'} mode Track renderer classes
  */
-function enablePerformanceTracking(useWebGL) {
+async function enablePerformanceTracking(mode) {
   defineFrameContainer(CompositeMapRenderer, 'renderFrame');
   trackPerformance(VectorSource);
-  if (useWebGL) {
+  if (mode === 'webgl') {
     trackPerformance(MixedGeometryBatch);
     trackPerformance(VectorStyleRenderer);
     trackPerformance(WebGLVectorLayerRenderer);
     trackPerformance(TileGeometry);
     trackPerformance(WebGLVectorTileLayerRenderer);
+  } else if (mode === 'webgpu') {
+    try {
+      const [
+        {default: WebGPUVectorStyleRenderer},
+        {default: WebGPUVectorLayerRenderer},
+      ] = await Promise.all([
+        import(WEBGPU_VECTOR_STYLE_RENDERER_MODULE),
+        import(WEBGPU_VECTOR_LAYER_RENDERER_MODULE),
+      ]);
+      trackPerformance(WebGPUVectorStyleRenderer);
+      trackPerformance(WebGPUVectorLayerRenderer);
+    } catch (error) {
+      console.warn('Failed to enable WebGPU performance tracking', error);
+    }
   } else {
     trackPerformance(BuilderGroup);
     trackPerformance(ExecutorGroup);
@@ -476,16 +518,33 @@ export function initializeGui() {
   registerGuiParameter('animate', 'Start Animation', [], animate, () => {});
   registerGuiParameter(
     'renderer',
-    'Use WebGL',
+    'Use GPU',
     ['webgl', 'canvas'],
     false,
-    (value, initial) => {
+    async (value, initial) => {
       // if perf tracking is enabled, reloading the page is necessary to monkey-patch the correct classes
       if (getGuiParameterValue('performance') && !initial) {
         location.reload();
         return;
       }
-      regenerateLayer();
+      await regenerateLayer();
+    },
+  );
+
+  registerGuiParameter(
+    'webgpu',
+    'Use WebGPU',
+    ['webgpu', 'webgl'],
+    false,
+    async (value, initial) => {
+      // if perf tracking is enabled, reloading the page is necessary to monkey-patch the correct classes
+      if (getGuiParameterValue('performance') && !initial) {
+        location.reload();
+        return;
+      }
+      if (getGuiParameterValue('renderer') === true) {
+        await regenerateLayer();
+      }
     },
   );
 
@@ -496,7 +555,13 @@ export function initializeGui() {
     false,
     (value, initial) => {
       if (value && initial) {
-        enablePerformanceTracking(getGuiParameterValue('renderer') === true);
+        const mode =
+          getGuiParameterValue('renderer') === true
+            ? getGuiParameterValue('webgpu') === true
+              ? 'webgpu'
+              : 'webgl'
+            : 'canvas';
+        void enablePerformanceTracking(mode);
       } else if (!initial) {
         location.reload();
       }

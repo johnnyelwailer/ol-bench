@@ -38,6 +38,16 @@ function main() {
     (map) => {
       map.addLayer(new VectorLayer({source, style}));
     },
+    async (map) => {
+      const modulePath = ['ol', 'layer', 'WebGPUVector.js'].join('/');
+      const {default: WebGPUVectorLayer} = await import(modulePath);
+      map.addLayer(
+        new WebGPUVectorLayer({
+          source,
+          style,
+        }),
+      );
+    },
   );
   initializeGui();
   registerGuiParameter(

@@ -49,6 +49,16 @@ function main() {
         }),
       );
     },
+    async (map) => {
+      const modulePath = ['ol', 'layer', 'WebGPUVector.js'].join('/');
+      const {default: WebGPUVectorLayer} = await import(modulePath);
+      map.addLayer(
+        new WebGPUVectorLayer({
+          source,
+          style,
+        }),
+      );
+    },
   );
   initializeGui();
   registerGuiParameter(
