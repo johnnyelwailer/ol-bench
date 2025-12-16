@@ -38,6 +38,14 @@ const link = new Link({
 let map;
 
 /** @type {HTMLDivElement|null} */
+let rendererErrorElement = null;
+
+/** @type {'canvas'|'webgl'|'webgpu'} */
+let activeRenderer = 'canvas';
+
+let suppressRendererSelectionUpdate = false;
+
+/** @type {HTMLDivElement|null} */
 let fpsElement = null;
 
 /** @type {import('ol/events.js').EventsKey|null} */
@@ -131,6 +139,122 @@ function ensureFpsElement() {
   renderFpsText();
   attachFpsElementToAnalyzer();
   return el;
+}
+
+function ensureRendererErrorElement() {
+  if (rendererErrorElement) {
+    return rendererErrorElement;
+  }
+  const target = map?.getTargetElement?.() ?? document.body;
+  const el = document.createElement('div');
+  el.id = 'renderer-error';
+  el.style.cssText = `
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, -50%);
+	z-index: 5;
+	max-width: 520px;
+	width: min(520px, calc(100% - 24px));
+	padding: 10px 12px;
+	border-radius: 6px;
+	background: rgba(140, 0, 0, 0.85);
+	color: white;
+	font: 12px/1.35 monospace;
+	pointer-events: auto;
+	`;
+  el.hidden = true;
+
+  const header = document.createElement('div');
+  header.style.cssText = `display: flex; gap: 10px; align-items: center;`;
+
+  const title = document.createElement('div');
+  title.dataset.role = 'title';
+  title.style.cssText = `font-weight: 700;`;
+  header.appendChild(title);
+
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.textContent = '×';
+  close.style.cssText = `
+	margin-left: auto;
+	border: 0;
+	background: transparent;
+	color: white;
+	font: 18px/1 monospace;
+	cursor: pointer;
+	padding: 0 4px;
+	`;
+  close.addEventListener('click', () => {
+    el.hidden = true;
+  });
+  header.appendChild(close);
+
+  const body = document.createElement('pre');
+  body.dataset.role = 'body';
+  body.style.cssText = `margin: 8px 0 0; white-space: pre-wrap;`;
+
+  el.appendChild(header);
+  el.appendChild(body);
+
+  // Make absolute positioning relative to the map target when possible.
+  if (target instanceof HTMLElement) {
+    const computed = window.getComputedStyle(target);
+    if (computed.position === 'static') {
+      target.style.position = 'relative';
+    }
+    target.appendChild(el);
+  } else {
+    document.body.appendChild(el);
+  }
+
+  rendererErrorElement = el;
+  return el;
+}
+
+function clearRendererError() {
+  if (!rendererErrorElement) {
+    return;
+  }
+  rendererErrorElement.hidden = true;
+}
+
+function showRendererError(
+  /** @type {string} */ title,
+  /** @type {unknown} */ error,
+) {
+  const el = ensureRendererErrorElement();
+  const titleEl = el.querySelector('[data-role="title"]');
+  const bodyEl = el.querySelector('[data-role="body"]');
+  if (titleEl) {
+    titleEl.textContent = `${title} (active: ${activeRenderer})`;
+  }
+  if (bodyEl) {
+    const message = error instanceof Error ? error.message : String(error);
+    let hint = '';
+    if (
+      typeof message === 'string' &&
+      message.includes('Failed to fetch dynamically imported module') &&
+      message.includes('/ol/layer/WebGPUVector.js')
+    ) {
+      hint =
+        '\n\nThis OpenLayers build/version likely does not include WebGPU modules. ' +
+        'Try a different OpenLayers version or switch the renderer to WebGL/Canvas.';
+    }
+    bodyEl.textContent = message ? `${message}${hint}` : hint.trim();
+  }
+  el.hidden = false;
+}
+
+function setRendererSelectionSilently(
+  /** @type {'canvas'|'webgl'|'webgpu'} */ value,
+) {
+  suppressRendererSelectionUpdate = true;
+  try {
+    link.update('renderer', value);
+  } finally {
+    suppressRendererSelectionUpdate = false;
+  }
 }
 
 function renderFpsText() {
@@ -707,6 +831,7 @@ export function getGuiParameterValue(id) {
  * @param {Object<string, string>} options Label->value map (value is stored in URL)
  * @param {string} defaultValue Default value
  * @param {function(string, boolean|null): void|Promise<void>} callback Callback
+ * @return {import('lil-gui').Controller} Controller
  */
 export function registerGuiSelectParameter(
   id,
@@ -722,8 +847,6 @@ export function registerGuiSelectParameter(
 
   const controller = gui.add(guiParams, id).name(label).options(options);
 
-  void callback(initialValue, true);
-
   link.track(id, (value) => {
     if (!allowed.has(value)) {
       return;
@@ -737,31 +860,64 @@ export function registerGuiSelectParameter(
     link.update(id, rawValue);
     void callback(rawValue, false);
   });
+
+  void callback(initialValue, true);
+
+  return controller;
 }
 
 export async function regenerateLayer() {
-  map.getLayers().clear();
+  clearRendererError();
+  const previousLayers = map.getLayers().getArray().slice();
+  const previousRenderer = activeRenderer;
   const requested = getGuiParameterValue('renderer') || 'canvas';
 
-  if (requested === 'webgpu' && useWebGPUCallback) {
+  if (requested === 'webgpu') {
+    if (!useWebGPUCallback) {
+      showRendererError('WebGPU is not available for this benchmark', '');
+      if (previousRenderer !== 'webgpu') {
+        setRendererSelectionSilently(previousRenderer);
+      }
+      return;
+    }
     try {
+      map.getLayers().clear();
       await useWebGPUCallback(map);
       logActiveRenderer('renderer: webgpu');
-      return;
+      activeRenderer = 'webgpu';
     } catch (error) {
-      console.warn('WebGPU failed to initialize, falling back to WebGL', error);
-      logActiveRenderer('renderer: webgpu (fallback: webgl)');
+      console.warn('WebGPU failed to initialize', error);
+      map.getLayers().clear();
+      if (previousLayers.length) {
+        for (const layer of previousLayers) {
+          map.addLayer(layer);
+        }
+      } else if (previousRenderer === 'webgl') {
+        await useWebGLCallback(map);
+      } else {
+        await useCanvasCallback(map);
+      }
+      activeRenderer = previousRenderer;
+      if (previousRenderer !== 'webgpu') {
+        setRendererSelectionSilently(previousRenderer);
+      }
+      showRendererError('WebGPU failed to initialize', error);
     }
+    return;
   }
 
-  if (requested === 'webgl' || requested === 'webgpu') {
+  map.getLayers().clear();
+
+  if (requested === 'webgl') {
     await useWebGLCallback(map);
     logActiveRenderer('renderer: webgl');
+    activeRenderer = 'webgl';
     return;
   }
 
   await useCanvasCallback(map);
   logActiveRenderer('renderer: canvas');
+  activeRenderer = 'canvas';
 }
 
 /**
@@ -899,6 +1055,9 @@ export function initializeGui(options) {
     {Canvas: 'canvas', WebGL: 'webgl', WebGPU: 'webgpu'},
     'canvas',
     async (value, initial) => {
+      if (suppressRendererSelectionUpdate) {
+        return;
+      }
       // if perf tracking is enabled, reloading the page is necessary to monkey-patch the correct classes
       if (getGuiParameterValue('performance') && !initial) {
         location.reload();
