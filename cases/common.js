@@ -58,6 +58,21 @@ const WEBGPU_VECTOR_LAYER_RENDERER_MODULE = [
   'webgpu',
   'VectorLayer.js',
 ].join('/');
+const WEBGPU_RENDER_LAYER_MODULE = ['ol', 'render', 'webgpu', 'Layer.js'].join(
+  '/',
+);
+const WEBGPU_RENDERER_LAYER_MODULE = [
+  'ol',
+  'renderer',
+  'webgpu',
+  'Layer.js',
+].join('/');
+const WEBGPU_WGSL_BUILDER_MODULE = [
+  'ol',
+  'render',
+  'webgpu',
+  'WGSLBuilder.js',
+].join('/');
 
 const debugRenderer =
   new URL(window.location.href).searchParams.get('debugRenderer') === '1';
@@ -496,19 +511,30 @@ async function enablePerformanceTracking(mode) {
     trackPerformance(TileGeometry);
     trackPerformance(WebGLVectorTileLayerRenderer);
   } else if (mode === 'webgpu') {
-    try {
-      const [
-        {default: WebGPUVectorStyleRenderer},
-        {default: WebGPUVectorLayerRenderer},
-      ] = await Promise.all([
-        import(/* @vite-ignore */ WEBGPU_VECTOR_STYLE_RENDERER_MODULE),
-        import(/* @vite-ignore */ WEBGPU_VECTOR_LAYER_RENDERER_MODULE),
-      ]);
-      trackPerformance(WebGPUVectorStyleRenderer);
-      trackPerformance(WebGPUVectorLayerRenderer);
-    } catch (error) {
-      console.warn('Failed to enable WebGPU performance tracking', error);
-    }
+    const webgpuModules = [
+      {
+        path: WEBGPU_VECTOR_STYLE_RENDERER_MODULE,
+        name: 'WebGPU VectorStyleRenderer',
+      },
+      {
+        path: WEBGPU_VECTOR_LAYER_RENDERER_MODULE,
+        name: 'WebGPU VectorLayerRenderer',
+      },
+      {path: WEBGPU_RENDER_LAYER_MODULE, name: 'WebGPU RenderLayer'},
+      {path: WEBGPU_RENDERER_LAYER_MODULE, name: 'WebGPU MapLayerRenderer'},
+      {path: WEBGPU_WGSL_BUILDER_MODULE, name: 'WebGPU WGSLBuilder'},
+    ];
+
+    await Promise.all(
+      webgpuModules.map(async ({path, name}) => {
+        try {
+          const {default: klass} = await import(/* @vite-ignore */ path);
+          trackPerformance(klass, name);
+        } catch (error) {
+          console.warn(`Failed to track ${name}`, error);
+        }
+      }),
+    );
   } else {
     trackPerformance(BuilderGroup);
     trackPerformance(ExecutorGroup);
