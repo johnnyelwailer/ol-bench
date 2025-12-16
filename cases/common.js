@@ -59,6 +59,36 @@ const WEBGPU_VECTOR_LAYER_RENDERER_MODULE = [
   'VectorLayer.js',
 ].join('/');
 
+const debugRenderer =
+  new URL(window.location.href).searchParams.get('debugRenderer') === '1';
+
+function logActiveRenderer(/** @type {string} */ label) {
+  if (!debugRenderer) {
+    return;
+  }
+  const layers = map.getLayers().getArray();
+  const baseLayer = layers.length ? layers[layers.length - 1] : null;
+  const layer = /** @type {import('ol/layer/Layer.js').default|null} */ (
+    baseLayer
+  );
+  const layerName = layer?.constructor?.name ?? 'none';
+  console.info(`${label} (layer: ${layerName})`);
+
+  if (!layer) {
+    return;
+  }
+
+  map.once('rendercomplete', () => {
+    try {
+      const renderer = layer.getRenderer();
+      const rendererName = renderer?.constructor?.name ?? 'unknown';
+      console.info(`${label} (layer: ${layerName}, renderer: ${rendererName})`);
+    } catch (error) {
+      console.warn('Failed to determine active layer renderer', error);
+    }
+  });
+}
+
 /**
  * @param {function(Map): void} useWebGL Called when WebGL is enabled
  * @param {function(Map): void} useCanvas Called when WebGL is disabled
@@ -95,6 +125,7 @@ export class WebGLVectorLayer extends Layer {
     return new WebGLVectorLayerRenderer(this, {
       style: this.get('style'),
       variables: {},
+      disableHitDetection: true,
     });
   }
 }
@@ -106,6 +137,7 @@ export class WebGLVectorTileLayer extends BaseTileLayer {
   createRenderer() {
     return new WebGLVectorTileLayerRenderer(this, {
       style: this.get('style'),
+      disableHitDetection: true,
     });
   }
 }
@@ -295,7 +327,7 @@ export function generateLines(lineCount, curveComplexity, width) {
 
 const gui = new lilGui();
 
-/** @type {Record<string, boolean|number|function(): void>} */
+/** @type {Record<string, boolean|number|string|function(): void>} */
 const guiParams = {};
 
 /**
@@ -369,7 +401,7 @@ export function registerGuiParameter(
 
 /**
  * @param {string} id Parameter id
- * @return {number|boolean|null|function(): void} Current value (null if unknown/uninitialized)
+ * @return {number|boolean|string|null|function(): void} Current value (null if unknown/uninitialized)
  */
 export function getGuiParameterValue(id) {
   // read from url if not already set
@@ -382,28 +414,73 @@ export function getGuiParameterValue(id) {
     if (raw === 'true' || raw === 'false') {
       return raw === 'true';
     }
-    return null;
+    return raw || null;
   }
   return guiParams[id];
 }
 
+/**
+ * Registers a GUI string parameter with a fixed set of options.
+ * @param {string} id Id
+ * @param {string} label Label
+ * @param {Object<string, string>} options Label->value map (value is stored in URL)
+ * @param {string} defaultValue Default value
+ * @param {function(string, boolean|null): void|Promise<void>} callback Callback
+ */
+export function registerGuiSelectParameter(
+  id,
+  label,
+  options,
+  defaultValue,
+  callback,
+) {
+  const allowed = new Set(Object.values(options));
+  const fromUrl = new URL(window.location.href).searchParams.get(id);
+  const initialValue = fromUrl && allowed.has(fromUrl) ? fromUrl : defaultValue;
+  guiParams[id] = initialValue;
+
+  const controller = gui.add(guiParams, id).name(label).options(options);
+
+  void callback(initialValue, true);
+
+  link.track(id, (value) => {
+    if (!allowed.has(value)) {
+      return;
+    }
+    guiParams[id] = value;
+    controller.updateDisplay();
+    void callback(value, false);
+  });
+
+  controller.onFinishChange((/** @type {string} */ rawValue) => {
+    link.update(id, rawValue);
+    void callback(rawValue, false);
+  });
+}
+
 export async function regenerateLayer() {
   map.getLayers().clear();
-  if (getGuiParameterValue('renderer') !== true) {
-    await useCanvasCallback(map);
-    return;
-  }
+  const requested = getGuiParameterValue('renderer') || 'canvas';
 
-  if (getGuiParameterValue('webgpu') === true && useWebGPUCallback) {
+  if (requested === 'webgpu' && useWebGPUCallback) {
     try {
       await useWebGPUCallback(map);
+      logActiveRenderer('renderer: webgpu');
       return;
     } catch (error) {
       console.warn('WebGPU failed to initialize, falling back to WebGL', error);
+      logActiveRenderer('renderer: webgpu (fallback: webgl)');
     }
   }
 
-  await useWebGLCallback(map);
+  if (requested === 'webgl' || requested === 'webgpu') {
+    await useWebGLCallback(map);
+    logActiveRenderer('renderer: webgl');
+    return;
+  }
+
+  await useCanvasCallback(map);
+  logActiveRenderer('renderer: canvas');
 }
 
 /**
@@ -424,8 +501,8 @@ async function enablePerformanceTracking(mode) {
         {default: WebGPUVectorStyleRenderer},
         {default: WebGPUVectorLayerRenderer},
       ] = await Promise.all([
-        import(WEBGPU_VECTOR_STYLE_RENDERER_MODULE),
-        import(WEBGPU_VECTOR_LAYER_RENDERER_MODULE),
+        import(/* @vite-ignore */ WEBGPU_VECTOR_STYLE_RENDERER_MODULE),
+        import(/* @vite-ignore */ WEBGPU_VECTOR_LAYER_RENDERER_MODULE),
       ]);
       trackPerformance(WebGPUVectorStyleRenderer);
       trackPerformance(WebGPUVectorLayerRenderer);
@@ -443,57 +520,6 @@ async function enablePerformanceTracking(mode) {
   showTable();
   showGraph();
   /** @type {HTMLDivElement} */ (gui.domElement).style.right = '430px';
-}
-
-function animate() {
-  const view = map.getView();
-
-  const initialRotation = 0;
-  const initialZoom = 4;
-  const initialCenter = [0, 0];
-
-  view.setRotation(initialRotation);
-  view.setZoom(initialZoom);
-  view.setCenter(initialCenter);
-
-  setTimeout(() => {
-    view.animate(
-      {
-        rotation: initialRotation + Math.PI / 2,
-        duration: 2000,
-      },
-      {
-        rotation: initialRotation - Math.PI / 2,
-        duration: 2000,
-      },
-      {
-        zoom: 5,
-        duration: 2000,
-      },
-      {
-        zoom: 10,
-        duration: 2000,
-      },
-      {
-        zoom: initialZoom,
-        duration: 2000,
-      },
-      {
-        center: [initialCenter[0] + 40, initialCenter[1]],
-        duration: 2000,
-      },
-      {
-        center: initialCenter,
-        duration: 2000,
-      },
-      {
-        rotation: initialRotation + Math.PI / 2,
-      },
-      {
-        rotation: initialRotation - Math.PI / 2,
-      },
-    );
-  }, 1000);
 }
 
 export const olVersion =
@@ -515,12 +541,11 @@ export function initializeGui() {
       window.location.href = newUrl.href;
     });
 
-  registerGuiParameter('animate', 'Start Animation', [], animate, () => {});
-  registerGuiParameter(
+  registerGuiSelectParameter(
     'renderer',
-    'Use GPU',
-    ['webgl', 'canvas'],
-    false,
+    'Renderer',
+    {Canvas: 'canvas', WebGL: 'webgl', WebGPU: 'webgpu'},
+    'canvas',
     async (value, initial) => {
       // if perf tracking is enabled, reloading the page is necessary to monkey-patch the correct classes
       if (getGuiParameterValue('performance') && !initial) {
@@ -532,35 +557,15 @@ export function initializeGui() {
   );
 
   registerGuiParameter(
-    'webgpu',
-    'Use WebGPU',
-    ['webgpu', 'webgl'],
-    false,
-    async (value, initial) => {
-      // if perf tracking is enabled, reloading the page is necessary to monkey-patch the correct classes
-      if (getGuiParameterValue('performance') && !initial) {
-        location.reload();
-        return;
-      }
-      if (getGuiParameterValue('renderer') === true) {
-        await regenerateLayer();
-      }
-    },
-  );
-
-  registerGuiParameter(
     'performance',
     'Enable Performance Tracking',
     ['yes', 'no'],
     false,
     (value, initial) => {
       if (value && initial) {
-        const mode =
-          getGuiParameterValue('renderer') === true
-            ? getGuiParameterValue('webgpu') === true
-              ? 'webgpu'
-              : 'webgl'
-            : 'canvas';
+        const mode = /** @type {'canvas'|'webgl'|'webgpu'} */ (
+          getGuiParameterValue('renderer') || 'canvas'
+        );
         void enablePerformanceTracking(mode);
       } else if (!initial) {
         location.reload();

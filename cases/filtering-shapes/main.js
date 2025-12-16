@@ -51,11 +51,14 @@ function main() {
     },
     async (map) => {
       const modulePath = ['ol', 'layer', 'WebGPUVector.js'].join('/');
-      const {default: WebGPUVectorLayer} = await import(modulePath);
+      const {default: WebGPUVectorLayer} = await import(
+        /* @vite-ignore */ modulePath
+      );
       map.addLayer(
         new WebGPUVectorLayer({
           source,
           style,
+          disableHitDetection: true,
         }),
       );
     },

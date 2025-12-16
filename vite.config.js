@@ -1,10 +1,19 @@
-import {existsSync, readdirSync} from 'fs';
+import {existsSync, readdirSync, realpathSync} from 'fs';
 import fs from 'fs/promises';
 import {join, resolve} from 'path';
 import {defineConfig} from 'vite';
 import {dependencies} from './package.json';
 
 const casesDir = resolve(__dirname, 'cases');
+const projectRoot = resolve(__dirname);
+const fsAllow = [projectRoot];
+try {
+  // When using `npm link ol`, `node_modules/ol` is typically a symlink outside the project root.
+  // Vite's dev server blocks file access outside the root unless explicitly allowed.
+  fsAllow.push(realpathSync(resolve(__dirname, 'node_modules/ol')));
+} catch {
+  // ignore
+}
 
 const input = {
   main: resolve(__dirname, 'index.html'),
@@ -97,6 +106,14 @@ const CURRENT_OL_VERSION = dependencies.ol;
 
 export default defineConfig({
   plugins: [putImportmapFirst(), addNodeModulesToDist()],
+  resolve: {
+    preserveSymlinks: true,
+  },
+  server: {
+    fs: {
+      allow: fsAllow,
+    },
+  },
   build: {
     rollupOptions: {
       input,
